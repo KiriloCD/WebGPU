@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <title>Modular WebGPU Scene</title>
+    <style>
+        body { background: #000; margin: 0; display: flex; justify-content: center; align-items: center; height: 100vh; }
+        canvas { width: 512px; height: 512px;
+			image-rendering:pixelated;
+			// Fallback for older browsers 
+			//image-rendering: crisp-edges;
+			}
+    </style>
+</head>
+<body>
+    <canvas id="gpuCanvas" width="512" height="512"></canvas>
+
+    <script type="module">
+        import { sceneConfig } from './scene.js';
+        import { startRender } from './render.js';
+        const canvas = document.getElementById('gpuCanvas');
+        startRender(canvas, sceneConfig).catch(console.error);
+    </script>
+</body>
+</html>
