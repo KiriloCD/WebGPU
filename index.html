@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <title>WebGPU God Rays - Fixed & Smooth</title>
+    <style>
+        body { background: #000; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; overflow: hidden; }
+        canvas { width: 512px; height: 512px; }
+    </style>
+</head>
+<body>
+    <canvas id="gpuCanvas" width="512" height="512"></canvas>
+
+    <script type="module">
+        import { mat4 } from './libs/wgpu-matrix.min.js';
+        import { makeShaderDataDefinitions, makeStructuredView } from './libs/webgpu-utils.min.js';
+
+        async function init() {
+            const canvas = document.getElementById('gpuCanvas');
+            const adapter = await navigator.gpu.requestAdapter();
+            const device = await adapter.requestDevice();
+            const context = canvas.getContext('webgpu');
+            const format = navigator.gpu.getPreferredCanvasFormat();
+            context.configure({ device, format });
+
+            const shaderCode = `
+                struct MyUniforms {
+                    time: f32,
+                    resolution: vec2f,
+                };
+                @group(0) @binding(0) var<uniform> uni: MyUniforms;
+
+                struct Out {
+                    @builtin(position) pos: vec4f,
+                    @location(0) uv: vec2f
+                };
+
+                // Функція псевдовипадкових чисел для Jittering
+                fn rand(n: vec2f) -> f32 { 
+                    return fract(sin(dot(n, vec2f(12.9898, 4.1414))) * 43758.5453);
+                }
+
+                @vertex
+                fn vs(@builtin(vertex_index) idx: u32) -> Out {
+                    var pos = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
+                    var out: Out;
+                    out.pos = vec4f(pos[idx], 0.0, 1.0);
+                    out.uv = pos[idx] * 0.5 + 0.5;
+                    return out;
+                }
+
+                @fragment
+                fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
+                    let p = (uv * 2.0 - 1.0);
+                    var ro = vec3f(0.0, 0.0, -2.5); 
+                    var rd = normalize(vec3f(p, 1.2)); 
+
+                    let lightPos = vec3f(sin(uni.time * 0.5) * 1.2, 0.5, cos(uni.time * 0.5) * 1.2);
+                    let lightCol = vec3f(1.0, 0.8, 0.5);
+                    
+                    let spherePos = vec3f(0.0, 0.0, 0.0);
+                    let sphereRadius = 0.4;
+
+                    var color = vec3f(0.0);
+                    
+                    let steps = 64; 
+                    let stepSize = 0.08;
+                    
+                    // Додаємо випадковий зсув для кожного пікселя (Jittering)
+                    var t = stepSize * rand(uv + uni.time);
+
+                    for (var i = 0; i < steps; i++) {
+                        let curPos = ro + rd * t;
+                        
+                        // SDF сфери
+                        let dToSphere = length(curPos - spherePos) - sphereRadius;
+                        
+                        // Якщо ми влучили в сферу - припиняємо промінь
+                        if (dToSphere < 0.005) { break; }
+
+                        let dirToLight = normalize(lightPos - curPos);
+                        let distToLight = length(lightPos - curPos);
+                        
+                        var inShadow = false;
+                        let L = spherePos - curPos;
+                        let tc = dot(L, dirToLight);
+                        
+                        // Тінь відкидається тільки якщо сфера між точкою та світлом
+                        if (tc > 0.0 && tc < distToLight) {
+                            let d2 = dot(L, L) - tc * tc;
+                            if (d2 < sphereRadius * sphereRadius) {
+                                inShadow = true;
+                            }
+                        }
+
+                        if (!inShadow) {
+                            // Формула розсіювання
+                            let fog = 0.04 / (distToLight * distToLight + 0.2);
+                            color += lightCol * fog;
+                        }
+
+                        t += stepSize;
+                    }
+
+                    // Додаємо м'яку гамма-корекцію
+                    let finalColor = pow(color, vec3f(0.8));
+                    return vec4f(finalColor, 1.0);
+                }
+            `;
+
+            const defs = makeShaderDataDefinitions(shaderCode);
+            const views = makeStructuredView(defs.structs.MyUniforms);
+            const uniformBuffer = device.createBuffer({
+                size: views.arrayBuffer.byteLength,
+                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+            });
+
+            const shaderModule = device.createShaderModule({ code: shaderCode });
+            const pipeline = device.createRenderPipeline({
+                layout: 'auto',
+                vertex: { module: shaderModule, entryPoint: 'vs' },
+                fragment: { module: shaderModule, entryPoint: 'fs', targets: [{ format }] },
+                primitive: { topology: 'triangle-list' }
+            });
+
+            const bindGroup = device.createBindGroup({
+                layout: pipeline.getBindGroupLayout(0),
+                entries: [{ binding: 0, resource: { buffer: uniformBuffer } }]
+            });
+
+            function frame(time) {
+                views.set({ time: time * 0.001, resolution: [canvas.width, canvas.height] });
+                device.queue.writeBuffer(uniformBuffer, 0, views.arrayBuffer);
+
+                const encoder = device.createCommandEncoder();
+                const pass = encoder.beginRenderPass({
+                    colorAttachments: [{
+                        view: context.getCurrentTexture().createView(),
+                        clearValue: [0, 0, 0, 1],
+                        loadOp: 'clear', storeOp: 'store'
+                    }]
+                });
+                pass.setPipeline(pipeline);
+                pass.setBindGroup(0, bindGroup);
+                pass.draw(3);
+                pass.end();
+                device.queue.submit([encoder.finish()]);
+                requestAnimationFrame(frame);
+            }
+            requestAnimationFrame(frame);
+        }
+        init();
+    </script>
+</body>
+</html>
